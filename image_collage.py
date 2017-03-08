@@ -19,13 +19,14 @@ import cv2
 
 
 class Rect():
-	def __init__(self, new_size, image):
+	def __init__(self, new_size, image, orig_line=None):
 		#size is determined by (height, width)		
 		self.size = new_size
 		self.image = image
 		#loc is (x, y)
 		self.loc = (0, 0)
 		self.reshaped_image = None
+		self.orig_line = orig_line
 
 	def overlap(self, other):
 		left = max(self.loc[0], other.loc[0])
@@ -56,6 +57,14 @@ class Rect():
 
 		return length
 
+	def csv_line(self):
+		new_line = self.orig_line + [self.loc[0], self.loc[1], self.size[0], self.size[1]]
+		return new_line
+
+	def placed_load(self, loc, size):
+		self.loc = loc
+		self.size = size
+
 
 
 def read_met_csv(csv_file):
@@ -85,7 +94,41 @@ def read_met_csv(csv_file):
 		splits[2] = splits[2].replace('cm', ' ')
 		width = float(non_decimal.sub('', splits[2])) * 10
 
-		new_rect = Rect((height, width), image)
+		new_rect = Rect((height, width), image, row)
+
+		rect_list.append(new_rect)
+
+	return rect_list
+
+def read_placed_list(csv_file):
+	non_decimal = re.compile(r'[^\d.]+')
+	rect_list = []
+
+	met_csv = csv.reader(open(csv_file, 'rb'), delimiter=',')
+
+	for row in met_csv:
+		image_filename = row[-5]
+
+		image = cv2.imread(image_filename)
+
+		size_str = row[25]
+
+		begin = size_str.find('(')
+
+		size_str = size_str[begin + 1:]
+
+		splits = size_str.split()
+
+		print(splits[0] + " " + splits[2] + "\n" + size_str + " " + image_filename)
+		
+		height = float(non_decimal.sub('', splits[0])) * 10
+		
+		splits[2] = splits[2].replace('cm', ' ')
+		width = float(non_decimal.sub('', splits[2])) * 10
+
+		new_rect = Rect((height, width), image, row[:-4])
+
+		new_rect.placed_load((int(float(row[-4])), int(float(row[-3]))), (int(float(row[-2])), int(float(row[-1]))))
 
 		rect_list.append(new_rect)
 
@@ -289,7 +332,6 @@ def corner_distance(rect_list):
 def new_rect_max_distance(rect_list, new_rect):
 
 	max_distance = 0
-	intervals = [0, 1]
 	for a in rect_list:
 		rect_dis = max_rect_distance(a, new_rect)
 
@@ -314,6 +356,8 @@ def max_corner_distances(placed, new_rect, valid_locs):
 	#print(distances)
 	return distances
 
+
+
 def adjust_rects(placed, out_im_size):
 
 	min_x = 0
@@ -332,7 +376,8 @@ def adjust_rects(placed, out_im_size):
 		if (rect.loc[1] + rect.size[0] > max_y):
 			max_y = rect.loc[1] + rect.size[0]
 
-	if (out_im_size != 0):
+
+	if (out_im_size != -1):
 		min_x = ((max_x - min_x) / 2) + min_x - (out_im_size / 2)
 		min_y = ((max_y - min_y) / 2) + min_y - (out_im_size / 2)
 
@@ -759,12 +804,6 @@ def pt_to_rect(rect, pt):
 	elif (rect.loc[1] <= pt[1] and rect.loc[1] + rect.size[0] >= pt[1]):
 		y_dis = 0
 
-	
-
-	if (pt[0] == 500 and pt[1] == 500):
-		print "Rect: ", rect.loc, (rect.size[1], rect.size[0]), pt, x_dis, y_dis, math.sqrt((x_dis * x_dis) + (y_dis * y_dis))
-		#return 80000000000.0
-	
 	return math.sqrt((x_dis * x_dis) + (y_dis * y_dis))
 
 
@@ -776,7 +815,7 @@ def mask_blur(im, rect_mask, filter_size):
 	mask_acc = np.zeros(shape=mask.shape, dtype="float64")
 	f_im = im.astype("float64")
 
-	
+	start_time = time.time()
 	for y in range(im.shape[0]):
 		for x in range(im.shape[1]):
 
@@ -797,7 +836,12 @@ def mask_blur(im, rect_mask, filter_size):
 			acc_im[y, x, :] = f_im[y, x, :] + acc_im[y - 1, x, :] + acc_im[y, x - 1, :] - acc_im[y - 1, x - 1, :]
 			mask_acc[y, x] = mask[y, x] + mask_acc[y - 1, x] + mask_acc[y, x - 1] - mask_acc[y - 1, x- 1]
 
-	
+		if (y % 10 == 0):
+			time_so_far = time.time() - start_time
+			eta = (time_so_far - im.shape[0] - im.shape[0]) / (y + 1)
+			sys.stdout.write("Blurred %d / %d completed, eta: %.2\r" % (y + 1, im.shape[0] + im.shape[0], eta))
+			sys.stdout.flush()
+			
 	blurred_im = np.zeros(shape=im.shape, dtype="uint8")
 	for y in range(im.shape[0]):
 		for x in range(im.shape[1]):
@@ -831,8 +875,47 @@ def mask_blur(im, rect_mask, filter_size):
 			total_avg = total_avg / mask_num
 
 			blurred_im[y, x, :] = total_avg[:].astype("uint8")
+		
+		if (y % 10 == 0):
+			time_so_far = time.time() - start_time
+			eta = (time_so_far - im.shape[0] - im.shape[0]) / (y + im.shape[0] + 1)
+			sys.stdout.write("\rBlurred %d / %d completed, eta: %.2" % (y + im.shape[0] + 1, im.shape[0] + im.shape[0], eta))
+			sys.stdout.flush()
 
 	return blurred_im
+
+def scalar_darken(im, scalar):
+
+	mask = np.ones(shape=rect_mask.shape) - rect_mask
+
+	f_im = im.astype("float32")
+
+	f_im = f_im * scalar
+
+	return f_im.astype("uint8")
+
+def get_enclosed_rects(placed, mask):
+	search_rects = []
+	interval = [0, 1]
+	for rect in placed:
+		searchable = False
+		
+		for x in range(rect.loc[0], rect.loc[0] + rect.size[1]):
+			
+			if (mask[rect.loc[1] - 1, x] == 0 or mask[rect.loc[1] + rect.size[0] + 1, x] == 0):
+				searchable = True
+
+		for y in range(rect.loc[1], rect.loc[1] + rect.size[0]):
+			if (mask[y, rect.loc[0] - 1] == 0 or mask[y, rect.loc[1] + 1] == 0):
+				searchable = True
+
+		if searchable:
+			search_rects.append(rect)
+
+	print("Removed %d rects from search list!" % (len(placed) - len(search_rects)))
+
+	return search_rects
+			
 
 def local_color_background(im, placed, buf=100, fade="top two"):
 	
@@ -846,15 +929,17 @@ def local_color_background(im, placed, buf=100, fade="top two"):
 
 	mask = get_rect_mask(avg_im, placed, buf)
 
+	search_rects = get_enclosed_rects(placed, mask)
 	
-	
+	eta = 500.0
+	start_time = time.time()
 	for y in range(avg_im.shape[0]):
 		for x in range(avg_im.shape[1]):
 			if (mask[y, x] == 1):
 				continue
 			
 			distances = []
-			for i, rect in enumerate(placed):
+			for i, rect in enumerate(search_rects):
 				dis = pt_to_rect(rect, (x - buf, y - buf))
 				distances.append((dis, i))
 
@@ -864,14 +949,14 @@ def local_color_background(im, placed, buf=100, fade="top two"):
 
 			#return
 			if (fade == "none"):
-				avg_im[y, x, :] = placed[distances[0][1]].dom_color
+				avg_im[y, x, :] = search_rects[distances[0][1]].dom_color
 			elif (fade == "top two"):
 				total_dis = 0.0				
 				for i in range(2):
 					total_dis += distances[i][0]
 
 				if (total_dis == 0):
-					avg_im[y, x, :] = placed[distances[0][1]].dom_color
+					avg_im[y, x, :] = search_rects[distances[0][1]].dom_color
 					continue
 
 				
@@ -882,12 +967,21 @@ def local_color_background(im, placed, buf=100, fade="top two"):
 
 					#share = share / 2.0
 				
-					grad_avg = grad_avg + (placed[distances[i][1]].dom_color.astype("float64") * share)
+					grad_avg = grad_avg + (search_rects[distances[i][1]].dom_color.astype("float64") * share)
 				
 				avg_im[y, x,:] = grad_avg[:].astype("uint8")
+		if (y % 10 == 0):
+			time_so_far = time.time() - start_time
+			eta = (time_so_far * avg_im.shape[0]) / (y + 1)
+			sys.stdout.write("Grad avg %d / %d completed, eta: %.2f\r" % (y + 1, avg_im.shape[0], eta / 60))
+			sys.stdout.flush()
+
+	print("Total time taken: %.2f" % ((time.time() - start_time) / 60))
 	
 	print("Blurring")
-	avg_im = mask_blur(avg_im, mask, 100)	
+	avg_im = mask_blur(avg_im, mask, 100)
+
+	avg_im = scalar_darken(avg_im, 0.8)
 
 	#f_avg_im = avg_im.astype("float32") * 0.75
 	#avg_im = f_avg_im.astype("uint8")		
@@ -914,7 +1008,8 @@ def local_color_background(im, placed, buf=100, fade="top two"):
 			
 
 
-def create_image(placed, out_name, out_im_size):
+def create_image(placed, out_name, out_im_size, add_background=False):
+	
 	for rect in placed:
 		print("Rect")
 		print(rect.loc)
@@ -922,6 +1017,7 @@ def create_image(placed, out_name, out_im_size):
 	max_size = adjust_rects(placed, out_im_size)	
 
 
+	
 	center_unbounded_rects(placed)
 
 	
@@ -955,7 +1051,8 @@ def create_image(placed, out_name, out_im_size):
 
 	#kmeans_dominant_color(placed)
 
-	test_im = local_color_background(test_im, placed)
+	if (add_background):
+		test_im = local_color_background(test_im, placed)
 
 	#test_im = avg_background(test_im, placed)
 
@@ -978,29 +1075,8 @@ def get_shared_side_lengths(placed, new_rect, locs):
 		shared_lengths.append(shared_length(placed, new_rect))
 
 	return shared_lengths
-	
 
-def main(argv):
-	
-	opts, args = getopt.getopt(argv, "i:o:s:", ["csv=", "out=", "size="])
-
-	csv_filename = ""
-	out_name = ""
-	out_im_size = -1
-
-	for opt, arg in opts:
-		if opt in ("--csv", "-i"):
-			csv_filename = arg
-		elif opt in ("--out", "-o"):
-			out_name = arg
-		elif opt in ("--size", "-s"):
-			out_im_size = int(arg)
-
-
-	rect_list = read_met_csv(csv_filename)
-
-	rect_list.sort(key=lambda x: x.size[0] * x.size[1], reverse=True)
-
+def place_rectangles(rect_list):
 	placed = [rect_list[0]]
 
 	valid_locs_time = 0
@@ -1040,13 +1116,154 @@ def main(argv):
 		print("Placed rect: %d in %f seconds" % (cur_rect, time.time() - iter_time))
 		cur_rect += 1
 		iter_time = time.time()
-	#test_create_image(placed, "other" + out_name)
-
-	create_image(placed, out_name, out_im_size)
 
 	print("Valid locs time: %f" % (valid_locs_time))
 	print("max distance time: %f" % (max_distance_time))
 
+	return placed
+
+def remove_duplicates(first, second):
+
+	no_dups = []
+
+	for rect in second:
+		dup = False
+		for r in first:
+			if (rect.orig_line[0] == r.orig_line[0]):
+				dup = True
+
+		if not dup:
+			no_dups.append(rect)
+
+	print("Removed: %d duplicated" % (len(second) - len(no_dups)))
+	return no_dups
+
+def place_secondary_rectangles(placed, second):
+	valid_locs_time = 0
+	max_distance_time = 0
+	cur_rect = len(placed)
+
+	iter_time = time.time()
+
+	distance_threshold = corner_distance(placed)
+
+	for new_rect in second:	
+		temp_time = time.time()		
+		valid_locs = get_valid_locs(placed, new_rect)
+		valid_locs_time += time.time() - temp_time
+
+		#valid_locs.append((-2000, -660))
+		#print(valid_locs)
+		temp_time = time.time()
+		max_distances = max_corner_distances(placed, new_rect, valid_locs)
+		max_distance_time += time.time() - temp_time
+
+		if (min(max_distances) <= distance_threshold):
+			loc_index = max_distances.index(min(max_distances))
+			min_dis_locations = []
+			min_dis = min(max_distances)
+			for i in range(len(max_distances)):
+				if (max_distances[i] == min_dis):
+					min_dis_locations.append(valid_locs[i])
+
+			shared_side_lengths = get_shared_side_lengths(placed, new_rect, min_dis_locations)
+
+			loc_index = shared_side_lengths.index(max(shared_side_lengths))			
+				
+			new_rect.loc = min_dis_locations[loc_index]
+
+			placed.append(new_rect)
+			print("Placed rect: %d in %f seconds" % (cur_rect, time.time() - iter_time))
+		else:
+			print("Tried rect: %d in %f seconds" % (cur_rect, time.time() - iter_time))
+		
+		cur_rect += 1
+		iter_time = time.time()
+
+	print("Valid locs time: %f" % (valid_locs_time))
+	print("max distance time: %f" % (max_distance_time))
+
+	return placed
+
+
+
+def output_placement(placed, out_name):
+
+	with open(out_name, 'wb') as csv_file:
+		im_writer = csv.writer(csv_file, delimiter=',')
+
+		for rect in placed:
+			print(rect.csv_line())
+			im_writer.writerow(rect.csv_line())
+
+			
+
+def main(argv):
+	
+	opts, args = getopt.getopt(argv, "i:o:s:p:b", ["csv=", "out=", "size=", "prefix=", "second_list=", "overwrite", "background",
+							"placement_csv="])
+
+	csv_filename = ""
+	out_dir = ""
+	out_im_size = -1
+	prefix = ""
+	second_csv = ""
+	overwrite_csv = False
+	add_background = False
+	placement_csv = ""
+
+	for opt, arg in opts:
+		if opt in ("--csv", "-i"):
+			csv_filename = arg
+		elif opt in ("--out", "-o"):
+			out_dir = arg
+		elif opt in ("--size", "-s"):
+			out_im_size = int(arg)
+		elif opt in ("--prefix", "-p"):
+			prefix = arg
+		elif opt in ("--second_list"):
+			second_csv = arg
+		elif opt in ("--overwrite"):
+			overwrite_csv = True
+		elif opt in ("--background", "-b"):
+			add_background = True
+		elif opt in ("--placement_csv"):
+			placement_csv = arg
+
+	if not os.path.exists(out_dir):
+		os.makedirs(out_dir)
+
+	out_name = os.path.join(out_dir, prefix + '_collage.png')
+
+	rect_out_name = os.path.join(out_dir, prefix + "_placement.csv")
+
+	if (placement_csv != ""):
+		rect_out_name = placement_csv
+
+	placed = None
+	if (os.path.exists(rect_out_name) and not overwrite_csv):
+		placed = read_placed_list(rect_out_name)
+	else:
+		rect_list = read_met_csv(csv_filename)
+
+		rect_list.sort(key=lambda x: x.size[0] * x.size[1], reverse=True)
+
+		placed = place_rectangles(rect_list)
+
+		if (second_csv != ""):
+			second_list = read_met_csv(second_csv)
+			second_list = remove_duplicates(rect_list, second_list)
+			second_list.sort(key=lambda x: x.size[0] * x.size[1], reverse=True)
+			place_secondary_rectangles(placed, second_list)
+
+	
+	output_placement(placed, rect_out_name)
+	
+	#test_create_image(placed, "other" + out_name)
+
+	create_image(placed, out_name, out_im_size, add_background=add_background)
+
+	
 	
 
 		
