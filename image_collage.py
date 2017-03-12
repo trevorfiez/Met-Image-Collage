@@ -838,8 +838,8 @@ def mask_blur(im, rect_mask, filter_size):
 
 		if (y % 10 == 0):
 			time_so_far = time.time() - start_time
-			eta = (time_so_far - im.shape[0] - im.shape[0]) / (y + 1)
-			sys.stdout.write("Blurred %d / %d completed, eta: %.2\r" % (y + 1, im.shape[0] + im.shape[0], eta))
+			eta = (time_so_far * (im.shape[0] + im.shape[0])) / (y + 1)
+			sys.stdout.write("Blurred %d / %d completed, eta: %.2f\r" % (y + 1, im.shape[0] + im.shape[0], eta))
 			sys.stdout.flush()
 			
 	blurred_im = np.zeros(shape=im.shape, dtype="uint8")
@@ -878,15 +878,13 @@ def mask_blur(im, rect_mask, filter_size):
 		
 		if (y % 10 == 0):
 			time_so_far = time.time() - start_time
-			eta = (time_so_far - im.shape[0] - im.shape[0]) / (y + im.shape[0] + 1)
-			sys.stdout.write("\rBlurred %d / %d completed, eta: %.2" % (y + im.shape[0] + 1, im.shape[0] + im.shape[0], eta))
+			eta = (time_so_far * (im.shape[0] * im.shape[0])) / (y + im.shape[0] + 1)
+			sys.stdout.write("Blurred %d / %d completed, eta: %.2f\r" % (y + im.shape[0] + 1, im.shape[0] + im.shape[0], eta))
 			sys.stdout.flush()
 
 	return blurred_im
 
 def scalar_darken(im, scalar):
-
-	mask = np.ones(shape=rect_mask.shape) - rect_mask
 
 	f_im = im.astype("float32")
 
@@ -900,12 +898,12 @@ def get_enclosed_rects(placed, mask):
 	for rect in placed:
 		searchable = False
 		
-		for x in range(rect.loc[0], rect.loc[0] + rect.size[1]):
+		for x in range(int(rect.loc[0]), int(rect.loc[0] + rect.size[1])):
 			
 			if (mask[rect.loc[1] - 1, x] == 0 or mask[rect.loc[1] + rect.size[0] + 1, x] == 0):
 				searchable = True
 
-		for y in range(rect.loc[1], rect.loc[1] + rect.size[0]):
+		for y in range(int(rect.loc[1]), int(rect.loc[1] + rect.size[0])):
 			if (mask[y, rect.loc[0] - 1] == 0 or mask[y, rect.loc[1] + 1] == 0):
 				searchable = True
 
@@ -915,9 +913,49 @@ def get_enclosed_rects(placed, mask):
 	print("Removed %d rects from search list!" % (len(placed) - len(search_rects)))
 
 	return search_rects
+
+
+def distance_fade(im, mask, fade_dis, search_rects):
+	fade_im = im.astype("float32")
+
+	start_time = time.time()
+
+	for y in range(im.shape[0]):
+		for x in range(im.shape[1]):
+	#for y in range(300):
+	#	for x in range(300):
+			if (mask[y, x] == 1):
+				continue
+			
+			distances = []
+			for i, rect in enumerate(search_rects):
+				dis = pt_to_rect(rect, (x, y))
+				distances.append((dis, i))
+
+			#print(distances)
+			distances.sort()
+			#print(distances)
 			
 
-def local_color_background(im, placed, buf=100, fade="top two"):
+			intensity = 0.0
+
+			if (distances[0][0] < fade_dis):
+				intensity = 1 - (distances[0][0] / fade_dis)
+				#print(intensity)
+
+			fade_im[y, x, :] = fade_im[y, x, :] * intensity
+		
+		if (y % 10 == 0):
+			time_so_far = time.time() - start_time
+			eta = (time_so_far * im.shape[0]) / (y + 1)
+			sys.stdout.write("Distance Fade %d / %d completed, Total time: %.2f, Remaining Time: %.2f\r" % (y + 1, im.shape[0], eta / 60, ((1.0 - (y / im.shape[0]) * eta) / 60.0)))
+			sys.stdout.flush()
+
+	return fade_im.astype("uint8")
+	
+			
+
+def local_color_background(im, placed, out_dir, buf=0, fade="top two"):
 	
 	im_shape = im.shape
 	shift = buf
@@ -928,60 +966,68 @@ def local_color_background(im, placed, buf=100, fade="top two"):
 	
 
 	mask = get_rect_mask(avg_im, placed, buf)
-
+	sharp_back = os.path.join(out_dir, "local_background.png")
+	start_time = time.time()
 	search_rects = get_enclosed_rects(placed, mask)
 	
-	eta = 500.0
-	start_time = time.time()
-	for y in range(avg_im.shape[0]):
-		for x in range(avg_im.shape[1]):
-			if (mask[y, x] == 1):
-				continue
-			
-			distances = []
-			for i, rect in enumerate(search_rects):
-				dis = pt_to_rect(rect, (x - buf, y - buf))
-				distances.append((dis, i))
-
-			#print(distances)
-			distances.sort()
-			#print(distances)
-
-			#return
-			if (fade == "none"):
-				avg_im[y, x, :] = search_rects[distances[0][1]].dom_color
-			elif (fade == "top two"):
-				total_dis = 0.0				
-				for i in range(2):
-					total_dis += distances[i][0]
-
-				if (total_dis == 0):
-					avg_im[y, x, :] = search_rects[distances[0][1]].dom_color
+	if os.path.exists(sharp_back):
+		avg_im = cv2.imread(sharp_back)
+	else:
+		
+		eta = 500.0
+		for y in range(avg_im.shape[0]):
+			for x in range(avg_im.shape[1]):
+				if (mask[y, x] == 1):
 					continue
+			
+				distances = []
+				for i, rect in enumerate(search_rects):
+					dis = pt_to_rect(rect, (x - buf, y - buf))
+					distances.append((dis, i))
+
+				#print(distances)
+				distances.sort()
+				#print(distances)
+
+				#return
+				if (fade == "none"):
+					avg_im[y, x, :] = search_rects[distances[0][1]].dom_color
+				elif (fade == "top two"):
+					total_dis = 0.0				
+					for i in range(2):
+						total_dis += distances[i][0]
+
+					if (total_dis == 0):
+						avg_im[y, x, :] = search_rects[distances[0][1]].dom_color
+						continue
 
 				
-				grad_avg = np.zeros((1, 3), dtype="float64")
+					grad_avg = np.zeros((1, 3), dtype="float64")
 				
-				for i in range(2):
-					share = 1.0 - (distances[i][0] / total_dis)
+					for i in range(2):
+						share = 1.0 - (distances[i][0] / total_dis)
 
-					#share = share / 2.0
+						#share = share / 2.0
 				
-					grad_avg = grad_avg + (search_rects[distances[i][1]].dom_color.astype("float64") * share)
+						grad_avg = grad_avg + (search_rects[distances[i][1]].dom_color.astype("float64") * share)
 				
-				avg_im[y, x,:] = grad_avg[:].astype("uint8")
-		if (y % 10 == 0):
-			time_so_far = time.time() - start_time
-			eta = (time_so_far * avg_im.shape[0]) / (y + 1)
-			sys.stdout.write("Grad avg %d / %d completed, eta: %.2f\r" % (y + 1, avg_im.shape[0], eta / 60))
-			sys.stdout.flush()
+					avg_im[y, x,:] = grad_avg[:].astype("uint8")
+			if (y % 10 == 0):
+				time_so_far = time.time() - start_time
+				eta = (time_so_far * avg_im.shape[0]) / (y + 1)
+				sys.stdout.write("Grad avg %d / %d completed, Total time: %.2f, Remaining Time: %.2f\r" % (y + 1, avg_im.shape[0], eta / 60, ((1.0 - (y / avg_im.shape[0]) * eta) / 60.0)))
+				sys.stdout.flush()
+	
+	cv2.imwrite(sharp_back, avg_im)
 
 	print("Total time taken: %.2f" % ((time.time() - start_time) / 60))
 	
 	print("Blurring")
-	avg_im = mask_blur(avg_im, mask, 100)
+	avg_im = mask_blur(avg_im, mask, 300)
 
-	avg_im = scalar_darken(avg_im, 0.8)
+	#avg_im = scalar_darken(avg_im, 0.8)
+
+	avg_im = distance_fade(avg_im, mask, 2400, search_rects)
 
 	#f_avg_im = avg_im.astype("float32") * 0.75
 	#avg_im = f_avg_im.astype("uint8")		
@@ -1008,7 +1054,7 @@ def local_color_background(im, placed, buf=100, fade="top two"):
 			
 
 
-def create_image(placed, out_name, out_im_size, add_background=False):
+def create_image(placed, out_name, out_im_size, out_dir, add_background=False):
 	
 	for rect in placed:
 		print("Rect")
@@ -1052,7 +1098,7 @@ def create_image(placed, out_name, out_im_size, add_background=False):
 	#kmeans_dominant_color(placed)
 
 	if (add_background):
-		test_im = local_color_background(test_im, placed)
+		test_im = local_color_background(test_im, placed, out_dir)
 
 	#test_im = avg_background(test_im, placed)
 
@@ -1261,7 +1307,7 @@ def main(argv):
 	
 	#test_create_image(placed, "other" + out_name)
 
-	create_image(placed, out_name, out_im_size, add_background=add_background)
+	create_image(placed, out_name, out_im_size, out_dir, add_background=add_background)
 
 	
 	
