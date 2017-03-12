@@ -11,6 +11,8 @@ import numpy as np
 import random
 import math
 import time
+from shapely.geometry import LineString
+from shapely.geometry import Point
 from sklearn.cluster import MiniBatchKMeans
 
 sys.path.append('/usr/local/apps/opencv/opencv-2.4.11/lib/python2.7/site-packages/')
@@ -914,7 +916,7 @@ def get_enclosed_rects(placed, mask):
 
 	return search_rects
 
-
+#fade determined by distance to closest rectangle
 def distance_fade(im, mask, fade_dis, search_rects):
 	fade_im = im.astype("float32")
 
@@ -952,7 +954,59 @@ def distance_fade(im, mask, fade_dis, search_rects):
 			sys.stdout.flush()
 
 	return fade_im.astype("uint8")
+
+def sphere_fade(im, mask, fade_dis, search_rects):
+	max_dis = corner_distance(search_rects)
+	fade_begin = max_dis / 2
+	fade_end = fade_begin + fade_dis
 	
+	p = Point(0, 0)
+	circle = p.buffer(fade_end).boundary
+	l = LineString([(fade_begin, -max_dis), (fade_begin, max_dis)])
+	int_pts = circle.intersection(l)
+	max_inter = abs(int_pts.geoms[0].coords[0][1] - int_pts.geoms[1].coords[0][1])
+	scale_factor = []
+	for i in range(fade_dis):
+		l = LineString([(fade_begin + i, -max_dis), (fade_begin + i, max_dis)])
+		int_pts = circle.intersection(l)
+		inter = abs(int_pts.geoms[0].coords[0][1] - int_pts.geoms[1].coords[0][1])
+		scale = inter / max_inter
+		scale_factor.append(scale)
+
+	
+	fade_im = im.astype("float32")
+
+	start_time = time.time()
+	
+	center_pt = (im.shape[1] / 2, im.shape[0] / 2)
+
+	fade_im = im.astype("float32")
+
+	for y in range(im.shape[0]):
+		for x in range(im.shape[1]):
+			if (mask[y, x] == 1):
+				continue
+
+			
+			dis = pt_distance((x, y), center_pt)
+			if (dis < fade_begin):
+				continue
+			elif (dis >= fade_end):
+				fade_im[y, x, :] = 0
+			else:
+				fade_im[y, x, :] = fade_im[y, x, :] * scale_factor[int(dis - fade_begin)]
+
+	
+		if (y % 10 == 0):
+			time_so_far = time.time() - start_time
+			eta = (time_so_far * im.shape[0]) / (y + 1)
+			sys.stdout.write("Sphere Fade %d / %d completed, Total time: %.2f, Remaining Time: %.2f\r" % (y + 1, im.shape[0], eta / 60, ((1.0 - (y / im.shape[0]) * eta) / 60.0)))
+			sys.stdout.flush()
+
+	return fade_im.astype("uint8")
+
+			
+			
 			
 
 def local_color_background(im, placed, out_dir, buf=0, fade="top two"):
@@ -1023,12 +1077,13 @@ def local_color_background(im, placed, out_dir, buf=0, fade="top two"):
 	print("Total time taken: %.2f" % ((time.time() - start_time) / 60))
 	
 	print("Blurring")
-	avg_im = mask_blur(avg_im, mask, 300)
+	avg_im = mask_blur(avg_im, mask, 100)
 
 	#avg_im = scalar_darken(avg_im, 0.8)
 
-	avg_im = distance_fade(avg_im, mask, 2400, search_rects)
+	#avg_im = distance_fade(avg_im, mask, 2400, search_rects)
 
+	avg_im = sphere_fade(avg_im, mask, 400, search_rects)
 	#f_avg_im = avg_im.astype("float32") * 0.75
 	#avg_im = f_avg_im.astype("uint8")		
 	
@@ -1099,6 +1154,7 @@ def create_image(placed, out_name, out_im_size, out_dir, add_background=False):
 
 	if (add_background):
 		test_im = local_color_background(test_im, placed, out_dir)
+
 
 	#test_im = avg_background(test_im, placed)
 
