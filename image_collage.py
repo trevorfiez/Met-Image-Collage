@@ -11,6 +11,7 @@ import numpy as np
 import random
 import math
 import time
+import json
 from shapely.geometry import LineString
 from shapely.geometry import Point
 from sklearn.cluster import MiniBatchKMeans
@@ -102,6 +103,29 @@ def read_met_csv(csv_file):
 
 	return rect_list
 
+def size_unsplash_images(image_list, unsplash_dir):
+	
+	rect_list =  []
+	
+	most_likes = image_list[0][u'likes'] * 4
+	for info in image_list:
+		
+		image_name = os.path.join(unsplash_dir + '_photos', info[u'id'] + ".jpg")
+
+		image = cv2.imread(image_name)
+		
+		size_coefficient = info[u'likes'] / float(most_likes)
+		
+		height = int(info[u'height'] * size_coefficient)
+		width = int(info[u'width'] * size_coefficient)
+		
+		new_rect = Rect((height, width), image)
+		
+		rect_list.append(new_rect)
+	
+	return rect_list
+		
+		
 def read_placed_list(csv_file):
 	non_decimal = re.compile(r'[^\d.]+')
 	rect_list = []
@@ -378,11 +402,11 @@ def adjust_rects(placed, out_im_size):
 		if (rect.loc[1] + rect.size[0] > max_y):
 			max_y = rect.loc[1] + rect.size[0]
 
-
+	
 	if (out_im_size != -1):
 		min_x = ((max_x - min_x) / 2) + min_x - (out_im_size / 2)
 		min_y = ((max_y - min_y) / 2) + min_y - (out_im_size / 2)
-
+	
 	for rect in placed:
 		temp_loc = rect.loc
 		
@@ -523,16 +547,31 @@ def y_bounds(placed, rect_in):
 			d_bound = 1
 
 	return u_bound + d_bound
-		
+
+def border_counts(rect_list, rect_in):
+	l_space, r_space, u_space, d_space = space_around(rect_list, rect_in)
+	x_bounds = 0
+	y_bounds = 0
+	if (l_space != -1):
+		x_bounds += 1
+	if (r_space != -1):
+		x_bounds += 1
+	if (u_space != -1):
+		y_bounds += 1
+	if (d_space != -1):
+		y_bounds += 1
+	return x_bounds, y_bounds
 
 def get_edge_rects(placed):
 	edges = []
 
 	for rect_in in range(len(placed)):
-		
+		'''
 		x_bound = x_bounds(placed, rect_in)
 		y_bound = y_bounds(placed, rect_in)
-
+		'''
+		x_bound, y_bound = border_counts(placed, rect_in)
+		
 		if (x_bound < 2 or y_bound < 2):
 			edges.append(1)
 		else:
@@ -588,16 +627,13 @@ def rect_dom_colors(placed):
 
 		print np.amax(counts) / float(rect.size[0] * rect.size[1]), dom_cluster
 
-		rect.dom_color = dom_cluster.astype('uint8')
+		rect.dom_color = dom_cluster.astype('uint8')			
 
-			
-
-
-def get_space_around(rects, rect_in):
-	u_space = 8000
-	d_space = 8000
-	l_space = 8000
-	r_space = 8000
+def space_around(rects, rect_in):
+	u_space = -1
+	d_space = -1
+	l_space = -1
+	r_space = -1
 
 	for i in range(len(rects)):
 		
@@ -615,12 +651,12 @@ def get_space_around(rects, rect_in):
 
 			if (y_dis > 0):
 				space = rects[rect_in].loc[1] - (rects[i].loc[1] + rects[i].size[0]) 
-				if (space < u_space):
+				if (space < u_space or u_space == -1):
 					u_space = space
 
 			if (y_dis < 0):
 				space = rects[i].loc[1] - (rects[rect_in].loc[1] + rects[rect_in].size[0])
-				if (space < d_space):
+				if (space < d_space or d_space == -1):
 					d_space = space
 		
 		if (y_end > y_beg):
@@ -628,21 +664,28 @@ def get_space_around(rects, rect_in):
 
 			if (x_dis > 0):
 				space = rects[rect_in].loc[0] - (rects[i].loc[0] + rects[i].size[1])
-				if (space < l_space):
+				if (space < l_space or l_space == -1):
 					l_space = space
 
 			if (x_dis < 0):
 				space = rects[i].loc[0] - (rects[rect_in].loc[0] + rects[rect_in].size[1])
-				if (space < r_space):
+				if (space < r_space or r_space == -1):
+	
 					r_space = space
+					
+	return l_space, r_space, u_space, d_space
 
-	if (u_space == 8000 or d_space == 8000 or l_space == 8000 or r_space == 8000):
+def get_space_around(rects, rect_in):
+	
+	l_space, r_space, u_space, d_space = space_around(rects, rect_in)
+
+	if (u_space == -1 or d_space == -1 or l_space == -1 or r_space == -1):
 		print "Really weird", u_space, d_space, l_space, r_space
 		u_space = 0
 		d_space = 0
 		l_space = 0
 		r_space = 0
- 
+
 	return l_space, r_space, u_space, d_space
 
 	
@@ -1298,12 +1341,26 @@ def output_placement(placed, out_name):
 			print(rect.csv_line())
 			im_writer.writerow(rect.csv_line())
 
-			
+
+def read_unsplash_images(unsplash_source):
+
+	json_files = [os.path.join(unsplash_source, pos_json) for pos_json in os.listdir(unsplash_source) if pos_json.endswith('.json')]
+	
+	image_list = []
+	for json_file in json_files:
+		json_fp = open(json_file)
+		image_list += json.load(json_fp)
+		
+	image_list.sort(key=lambda x: x[u'likes'], reverse=True)
+
+	return image_list
+
+
 
 def main(argv):
 	
 	opts, args = getopt.getopt(argv, "i:o:s:p:b", ["csv=", "out=", "size=", "prefix=", "second_list=", "overwrite", "background",
-							"placement_csv="])
+							"placement_csv=", "unsplash="])
 
 	csv_filename = ""
 	out_dir = ""
@@ -1313,6 +1370,8 @@ def main(argv):
 	overwrite_csv = False
 	add_background = False
 	placement_csv = ""
+	unsplash = False
+	
 
 	for opt, arg in opts:
 		if opt in ("--csv", "-i"):
@@ -1331,6 +1390,9 @@ def main(argv):
 			add_background = True
 		elif opt in ("--placement_csv"):
 			placement_csv = arg
+		elif opt in ("--unsplash"):
+			unsplash_source = arg
+			unsplash = True
 
 	if not os.path.exists(out_dir):
 		os.makedirs(out_dir)
@@ -1345,11 +1407,14 @@ def main(argv):
 	placed = None
 	if (os.path.exists(rect_out_name) and not overwrite_csv):
 		placed = read_placed_list(rect_out_name)
-	else:
+	elif (unsplash == False):
 		rect_list = read_met_csv(csv_filename)
 
 		rect_list.sort(key=lambda x: x.size[0] * x.size[1], reverse=True)
 
+		for r in rect_list:
+			print(r.size)
+			
 		placed = place_rectangles(rect_list)
 
 		if (second_csv != ""):
@@ -1357,9 +1422,17 @@ def main(argv):
 			second_list = remove_duplicates(rect_list, second_list)
 			second_list.sort(key=lambda x: x.size[0] * x.size[1], reverse=True)
 			place_secondary_rectangles(placed, second_list)
+	elif (unsplash == True):
+		unsplash_images = read_unsplash_images(unsplash_source + '_json_files')
+		
+		rect_list = size_unsplash_images(unsplash_images, unsplash_source)
+		
+		rect_list.sort(key=lambda x: x.size[0] * x.size[1], reverse=True)
 
-	
-	output_placement(placed, rect_out_name)
+		
+		placed = place_rectangles(rect_list)
+
+	#output_placement(placed, rect_out_name)
 	
 	#test_create_image(placed, "other" + out_name)
 
